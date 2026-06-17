@@ -1,0 +1,19 @@
+{
+  "name": "Flip 7 · Marcador",
+  "short_name": "Flip 7",
+  "description": "Marcador responsivo para Flip 7 con rondas dinámicas, modo anfitrión y modo espectador.",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#f4f7fb",
+  "theme_color": "#111827",
+  "icons": [
+    {
+      "src": "icon.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}
