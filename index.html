@@ -837,7 +837,7 @@
      * Reemplaza estos valores por los de tu proyecto Firebase.
      * No incluyas claves reales en repositorios públicos si prefieres no exponerlas.
      **********************************************************************/
-    /*const FIREBASE_CONFIG = {
+    const FIREBASE_CONFIG = {
       apiKey: "TU_API_KEY",
       authDomain: "TU_PROYECTO.firebaseapp.com",
       databaseURL: "https://TU_PROYECTO-default-rtdb.firebaseio.com",
@@ -845,18 +845,7 @@
       storageBucket: "TU_PROYECTO.appspot.com",
       messagingSenderId: "000000000000",
       appId: "1:000000000000:web:0000000000000000000000"
-    };*/
-
-  const FIREBASE_CONFIG = {
-    apiKey: "AIzaSyCpPeuG73MskotUOTtb4VVFllKRMpp_fDo",
-    authDomain: "flip7-puntaje.firebaseapp.com",
-    databaseURL: "https://flip7-puntaje-default-rtdb.firebaseio.com",
-    projectId: "flip7-puntaje",
-    storageBucket: "flip7-puntaje.firebasestorage.app",
-    messagingSenderId: "332642840715",
-    appId: "1:332642840715:web:31e21b05015435c715648e",
-    measurementId: "G-V8XT3DZGWJ"
-  };
+    };
 
     const APP_VERSION = "2.0.0";
     const STORAGE_KEY = "flip7.scoreboard.v2";
@@ -1733,35 +1722,49 @@
         if (!options.silent) toast("Ingresa un código válido de 7 cifras");
         return;
       }
+
+      // Importante: no cambiamos definitivamente a modo espectador hasta
+      // confirmar que el código existe en Firebase. Así evitamos dejar la app
+      // bloqueada en solo lectura si el código no fue publicado por el anfitrión.
+      const previousState = JSON.parse(JSON.stringify(state));
+
       try {
         initFirebase();
-        state.mode = "spectator";
-        state.readOnly = true;
-        state.gameCode = code;
-        state.syncEnabled = false;
-        state.configCollapsed = true;
-        await loadRemotePublic(code);
+        const remoteState = await loadRemotePublic(code, { returnState: true });
+        state = remoteState;
         saveState({ publish: false });
         renderAll();
         closeCodeModal();
         startSpectatorTimer(code);
         if (!options.silent) toast("Modo espectador activado");
       } catch (error) {
+        state = normalizeState(previousState);
+        renderAll();
         console.error(error);
-        if (!options.silent) toast("No se pudo cargar el marcador remoto");
+        if (!options.silent) toast(error.userMessage || "No se pudo cargar el marcador remoto");
       }
     }
 
-    async function loadRemotePublic(code = state.gameCode) {
+    async function loadRemotePublic(code = state.gameCode, options = {}) {
       initFirebase();
-      const snap = await get(ref(firebaseDb, `games/${code}/public`));
+      code = normalizeCode(code);
+      const publicRef = ref(firebaseDb, `games/${code}/public`);
+      const snap = await get(publicRef);
+
+      if (!snap.exists()) {
+        const error = new Error(`Marcador no encontrado para el código ${code}`);
+        error.code = "remote/not-found";
+        error.userMessage = `No existe marcador publicado con el código ${code}`;
+        throw error;
+      }
+
       const payload = snap.val();
-      if (!payload) throw new Error("Marcador no encontrado");
       const normalized = normalizeState({
         ...state,
         mode: "spectator",
         readOnly: true,
         gameCode: code,
+        syncEnabled: false,
         players: payload.players,
         starterId: payload.starterId,
         scores: payload.scores,
@@ -1769,7 +1772,10 @@
         configCollapsed: true,
         lastUpdated: payload.updatedAt || Date.now()
       });
+
+      if (options.returnState) return normalized;
       state = normalized;
+      return normalized;
     }
 
     async function refreshRemote() {
