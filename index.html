@@ -1666,7 +1666,7 @@ const FIREBASE_CONFIG = {
         toast("Enlace de espectador copiado");
       } catch (error) {
         console.error(error);
-        toast("No se pudo crear el código. Revisa Firebase.");
+        toast(error.userMessage || "No se pudo crear el código. Revisa Firebase.");
       }
     }
 
@@ -1688,21 +1688,60 @@ const FIREBASE_CONFIG = {
 
     async function publishRemoteNow() {
       const user = await ensureAuth();
-      const code = state.gameCode || generateGameCode();
-      state.gameCode = code;
-      state.ownerUid = state.ownerUid || user.uid;
-      const base = `games/${code}`;
-      const privateRef = ref(firebaseDb, `${base}/private`);
-      const privateSnap = await get(privateRef);
-      const privateVal = privateSnap.val();
-      if (privateVal?.ownerUid && privateVal.ownerUid !== user.uid) {
-        throw new Error("Este código pertenece a otro anfitrión");
+      const hadExistingCode = Boolean(state.gameCode);
+
+      // No leemos el nodo privado antes de publicar.
+      // Si las reglas no permiten leer /private, hacer get(private) genera
+      // "Permission denied". En su lugar, intentamos reclamar/publicar
+      // y dejamos que las reglas de Firebase validen si el usuario es dueño.
+      let attempts = 0;
+      let lastError = null;
+
+      while (attempts < 5) {
+        attempts += 1;
+        const code = state.gameCode || generateGameCode();
+        state.gameCode = code;
+        state.ownerUid = user.uid;
+
+        try {
+          await claimAndPublishCode(code, user.uid);
+          return;
+        } catch (error) {
+          lastError = error;
+
+          // Si el código era nuevo y chocó con uno ya existente de otro dueño,
+          // probamos con otro código. Si el código ya venía guardado, no lo
+          // cambiamos automáticamente para evitar confundir al anfitrión.
+          if (!hadExistingCode && isFirebasePermissionDenied(error)) {
+            state.gameCode = "";
+            continue;
+          }
+          break;
+        }
       }
-      await update(ref(firebaseDb), {
-        [`${base}/private/ownerUid`]: user.uid,
-        [`${base}/private/createdOrUpdatedAt`]: Date.now()
-      });
+
+      const error = new Error("No fue posible publicar el marcador en Firebase");
+      error.originalError = lastError;
+      error.userMessage = isFirebasePermissionDenied(lastError)
+        ? "Permiso denegado. Revisa las reglas de Firebase o crea un código nuevo."
+        : "No se pudo publicar el marcador remoto.";
+      throw error;
+    }
+
+    async function claimAndPublishCode(code, ownerUid) {
+      const base = `games/${code}`;
+
+      // Orden importante:
+      // 1) Se reclama o confirma el dueño del código.
+      // 2) Se actualiza metadata privada.
+      // 3) Se publica el marcador público que podrán leer los espectadores.
+      await set(ref(firebaseDb, `${base}/private/ownerUid`), ownerUid);
+      await set(ref(firebaseDb, `${base}/private/createdOrUpdatedAt`), Date.now());
       await set(ref(firebaseDb, `${base}/public`), publicPayload());
+    }
+
+    function isFirebasePermissionDenied(error) {
+      return String(error?.code || error?.message || "").toLowerCase().includes("permission");
     }
 
     function scheduleRemotePublish() {
