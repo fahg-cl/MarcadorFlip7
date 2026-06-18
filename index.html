@@ -773,6 +773,7 @@
             <button class="btn small blue" id="createCodeBtn" title="Crear o actualizar código" aria-label="Crear o actualizar código">🔗</button>
             <button class="btn small" id="watchBtn" title="Ver como espectador" aria-label="Ver como espectador">👀</button>
             <button class="btn small" id="refreshBtn" title="Refrescar marcador" aria-label="Refrescar marcador">🔄</button>
+            <button class="btn small warn" id="exitSpectatorBtn" title="Salir del modo espectador" aria-label="Salir del modo espectador">🚪 Salir</button>
           </div>
         </div>
 
@@ -859,8 +860,9 @@ const FIREBASE_CONFIG = {
   measurementId: "G-V8XT3DZGWJ"
 };
 
-    const APP_VERSION = "2.0.0";
+    const APP_VERSION = "2.1.0";
     const STORAGE_KEY = "flip7.scoreboard.v2";
+    const HOST_SNAPSHOT_KEY = "flip7.scoreboard.v2.hostSnapshot";
     const WIN_SCORE = 200;
     const MAX_PLAYERS = 8;
     const MIN_PLAYERS = 1;
@@ -891,6 +893,7 @@ const FIREBASE_CONFIG = {
       createCodeBtn: document.getElementById("createCodeBtn"),
       watchBtn: document.getElementById("watchBtn"),
       refreshBtn: document.getElementById("refreshBtn"),
+      exitSpectatorBtn: document.getElementById("exitSpectatorBtn"),
       leaderBox: document.getElementById("leaderBox"),
       rankingList: document.getElementById("rankingList"),
       scoreTable: document.getElementById("scoreTable"),
@@ -954,6 +957,7 @@ const FIREBASE_CONFIG = {
       dom.createCodeBtn.addEventListener("click", createOrUpdateCode);
       dom.watchBtn.addEventListener("click", openCodeModal);
       dom.refreshBtn.addEventListener("click", refreshRemote);
+      dom.exitSpectatorBtn.addEventListener("click", exitSpectatorMode);
       dom.cancelScoreBtn.addEventListener("click", closeScoreModal);
       dom.closeCodeBtn.addEventListener("click", closeCodeModal);
       dom.joinCodeBtn.addEventListener("click", () => enterSpectatorMode(dom.codeInput.value));
@@ -1131,6 +1135,36 @@ const FIREBASE_CONFIG = {
       }
     }
 
+    function saveHostSnapshot(snapshot) {
+      try {
+        const hostState = normalizeState({
+          ...snapshot,
+          mode: "host",
+          readOnly: false
+        });
+        localStorage.setItem(HOST_SNAPSHOT_KEY, JSON.stringify(hostState));
+      } catch {
+        // Si localStorage no está disponible, la salida igual funcionará creando una copia local.
+      }
+    }
+
+    function loadHostSnapshot() {
+      try {
+        const saved = JSON.parse(localStorage.getItem(HOST_SNAPSHOT_KEY) || "null");
+        return saved ? normalizeState({ ...saved, mode: "host", readOnly: false }) : null;
+      } catch {
+        return null;
+      }
+    }
+
+    function clearHostSnapshot() {
+      try {
+        localStorage.removeItem(HOST_SNAPSHOT_KEY);
+      } catch {
+        // No requiere acción.
+      }
+    }
+
     function saveState({ publish = true } = {}) {
       state = normalizeState({ ...state, lastUpdated: Date.now() });
       localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
@@ -1243,8 +1277,9 @@ const FIREBASE_CONFIG = {
       dom.createCodeBtn.disabled = readonly;
       dom.refreshBtn.style.display = state.gameCode ? "inline-flex" : "none";
       dom.refreshBtn.disabled = state.mode === "host" && !state.syncEnabled;
+      dom.exitSpectatorBtn.style.display = state.mode === "spectator" ? "inline-flex" : "none";
       dom.toggleSummaryBtn.textContent = state.summaryCollapsed ? "📊" : "🔽";
-      dom.watchBtn.textContent = state.gameCode ? "👀" : "👀";
+      dom.watchBtn.textContent = state.mode === "spectator" ? "👀 Cambiar" : "👀";
     }
 
     function renderPlayers() {
@@ -1778,6 +1813,7 @@ const FIREBASE_CONFIG = {
       // confirmar que el código existe en Firebase. Así evitamos dejar la app
       // bloqueada en solo lectura si el código no fue publicado por el anfitrión.
       const previousState = JSON.parse(JSON.stringify(state));
+      if (previousState.mode !== "spectator") saveHostSnapshot(previousState);
 
       try {
         initFirebase();
@@ -1794,6 +1830,43 @@ const FIREBASE_CONFIG = {
         console.error(error);
         if (!options.silent) toast(error.userMessage || "No se pudo cargar el marcador remoto");
       }
+    }
+
+    function exitSpectatorMode() {
+      if (state.mode !== "spectator") return;
+
+      stopSpectatorTimer();
+      closeCodeModal();
+      closeScoreModal();
+
+      const previousHostState = loadHostSnapshot();
+      if (previousHostState) {
+        state = normalizeState({
+          ...previousHostState,
+          mode: "host",
+          readOnly: false,
+          configCollapsed: false
+        });
+        clearHostSnapshot();
+      } else {
+        // Si el usuario abrió directamente una URL ?game=1234567, puede no existir
+        // una partida local anterior. En ese caso convertimos el marcador visualizado
+        // en una copia local editable, sin código remoto ni sincronización activa.
+        state = normalizeState({
+          ...state,
+          mode: "host",
+          readOnly: false,
+          configCollapsed: false,
+          gameCode: "",
+          ownerUid: "",
+          syncEnabled: false
+        });
+      }
+
+      removeGameParamFromUrl();
+      saveState({ publish: false });
+      renderAll();
+      toast("Saliste del modo espectador");
     }
 
     async function loadRemotePublic(code = state.gameCode, options = {}) {
@@ -1877,6 +1950,7 @@ const FIREBASE_CONFIG = {
       const params = new URLSearchParams(location.search);
       const code = normalizeCode(params.get("game") || "");
       if (/^\d{7}$/.test(code)) {
+        if (state.mode !== "spectator") saveHostSnapshot(state);
         state.mode = "spectator";
         state.readOnly = true;
         state.gameCode = code;
@@ -1887,6 +1961,14 @@ const FIREBASE_CONFIG = {
     /**********************************************************************
      * Utilidades
      **********************************************************************/
+    function removeGameParamFromUrl() {
+      const url = new URL(location.href);
+      url.searchParams.delete("game");
+      const query = url.searchParams.toString();
+      const cleanPath = `${url.pathname}${query ? `?${query}` : ""}${url.hash}`;
+      history.replaceState(null, "", cleanPath);
+    }
+
     function generateGameCode() {
       return String(Math.floor(1000000 + Math.random() * 9000000));
     }
